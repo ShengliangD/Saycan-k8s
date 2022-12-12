@@ -36,7 +36,7 @@ context: |
 
   objects = [red block, blue block, green bowl, blue bowl, yellow block, green block]
 command:
-  \# Pick the red block and place it on the blue block.
+  "# Pick the red block and place it on the blue block."
 options:
   - text: pick_and_place(red block, blue block)
     affordance: 0.8

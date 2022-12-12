@@ -1,9 +1,5 @@
 import numpy as np
-
-openai_api_key = "" 
-ENGINE = "text-davinci-002"  # "text-ada-001"
-# Note for scoring model, due to limitations of the GPT-3 api, each option 
-# requires a separate call and can be expensive. Recommend iterating with ada.
+import torch
 
 overwrite_cache = True
 if overwrite_cache:
@@ -13,12 +9,20 @@ from transformers import GPT2Tokenizer, OPTForCausalLM
 model = OPTForCausalLM.from_pretrained("facebook/opt-125m")
 tokenizer = GPT2Tokenizer.from_pretrained("facebook/opt-125m")
 
-prompt = "Hey, are you consciours? Can you talk to me?"
-inputs = tokenizer(prompt, return_tensors="pt")
-
-# Generate
-generate_ids = model.generate(inputs.input_ids, max_length=30)
-tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+def opt_call(prompt, start_idx):
+  rets = {'choices': []}
+  for p in prompt:
+    prompt_inputs = tokenizer(p[:start_idx], return_tensors="pt").input_ids
+    option_inputs = tokenizer(p[start_idx:], return_tensors="pt").input_ids[:, 1:] # skip <s/>
+    logits = []
+    tokens = []
+    for i in range(0, len(option_inputs[0])):
+      # Generate
+      ret = model.generate(torch.concat([prompt_inputs, option_inputs[:, :i]], dim=1), max_new_tokens=1, output_scores=True, return_dict_in_generate=True, renormalize_logits=True, temperature=0.0)
+      tokens.append(tokenizer.decode(option_inputs[0][i]))
+      logits.append(ret['scores'][0][0][option_inputs[0][i]].item())
+    rets['choices'].append({'logprobs': {'tokens': tokens, 'token_logprobs': logits}})
+  return rets
 
 def gpt3_call(engine="text-ada-001", prompt="", max_tokens=128, temperature=0, 
               logprobs=1, echo=False):
@@ -62,18 +66,12 @@ def gpt3_call(engine="text-ada-001", prompt="", max_tokens=128, temperature=0,
     LLM_CACHE[id] = response
   return response
 
-def gpt3_scoring(query, options, engine="text-ada-001", limit_num_options=None, option_start="\n", verbose=False, print_tokens=False):
+def gpt3_scoring(query, options, limit_num_options=None, verbose=False, print_tokens=False):
   if limit_num_options:
     options = options[:limit_num_options]
   verbose and print("Scoring", len(options), "options")
   gpt3_prompt_options = [query + option for option in options]
-  response = gpt3_call(
-      engine=engine, 
-      prompt=gpt3_prompt_options, 
-      max_tokens=0,
-      logprobs=1, 
-      temperature=0,
-      echo=True,)
+  response = opt_call(gpt3_prompt_options, start_idx=len(query))
 
   scores = {}
   for option, choice in zip(options, response["choices"]):
@@ -83,10 +81,6 @@ def gpt3_scoring(query, options, engine="text-ada-001", limit_num_options=None, 
     total_logprob = 0
     for token, token_logprob in zip(reversed(tokens), reversed(token_logprobs)):
       print_tokens and print(token, token_logprob)
-      if option_start is None and not token in option:
-        break
-      if token == option_start:
-        break
       total_logprob += token_logprob
     scores[option] = total_logprob
 
@@ -103,20 +97,11 @@ def normalize_scores(scores):
   return normed_scores
 
 def make_plan(context, command, options, terminate_string, affordance_scores, max_tasks=5, verbose=False, engine="text-ada-001", print_tokens=False):
-  gpt3_context_lines = context.split("\n")
-  gpt3_context_lines_keep = []
-  for gpt3_context_line in gpt3_context_lines:
-    gpt3_context_lines_keep.append(gpt3_context_line)
-
-  context = "\n".join(gpt3_context_lines_keep)
-
-  gpt3_prompt = context
-  gpt3_prompt += "\n# " + command + "\n"
+  gpt3_prompt = context + "\n" + command + "\n"
 
   all_llm_scores = []
   all_affordance_scores = []
   all_combined_scores = []
-  affordance_scores = affordance_scores
   num_tasks = 0
   selected_task = ""
   steps_text = []
@@ -125,7 +110,7 @@ def make_plan(context, command, options, terminate_string, affordance_scores, ma
     if num_tasks > max_tasks:
       break
 
-    llm_scores, _ = gpt3_scoring(gpt3_prompt, options, verbose=True, engine=ENGINE, print_tokens=False)
+    llm_scores, _ = gpt3_scoring(gpt3_prompt, options, verbose=True, print_tokens=False)
     combined_scores = {option: np.exp(llm_scores[option]) * affordance_scores[option] for option in options}
     combined_scores = normalize_scores(combined_scores)
     selected_task = max(combined_scores, key=combined_scores.get)
@@ -138,7 +123,7 @@ def make_plan(context, command, options, terminate_string, affordance_scores, ma
     all_combined_scores.append(combined_scores)
 
   print('**** Solution ****')
-  print('# ' + command)
+  print(command)
   for i, step in enumerate(steps_text):
     if step == '' or step == terminate_string:
       break
