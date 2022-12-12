@@ -39,13 +39,13 @@ command:
   "# Pick the red block and place it on the blue block."
 options:
   - text: pick_and_place(red block, blue block)
-    affordance: 0.8
+    affordance: 1.0
   - text: pick_and_place(blue block, red block)
-    affordance: 0.2
+    affordance: 1.0
   - text: pick_and_place(red block, green block)
-    affordance: 0.5
+    affordance: 1.0
   - text: pick_and_place(blue block, green block)
-    affordance: 0.7
+    affordance: 1.0
 termination_string:
   done()
 max_steps: 5
