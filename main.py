@@ -9,6 +9,17 @@ overwrite_cache = True
 if overwrite_cache:
   LLM_CACHE = {}
 
+from transformers import GPT2Tokenizer, OPTForCausalLM
+model = OPTForCausalLM.from_pretrained("facebook/opt-125m")
+tokenizer = GPT2Tokenizer.from_pretrained("facebook/opt-125m")
+
+prompt = "Hey, are you consciours? Can you talk to me?"
+inputs = tokenizer(prompt, return_tensors="pt")
+
+# Generate
+generate_ids = model.generate(inputs.input_ids, max_length=30)
+tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+
 def gpt3_call(engine="text-ada-001", prompt="", max_tokens=128, temperature=0, 
               logprobs=1, echo=False):
   # return a dummy response
@@ -133,11 +144,6 @@ def make_plan(context, command, options, terminate_string, affordance_scores, ma
       break
     print('Step ' + str(i) + ': ' + step)
   return steps_text
-
-def load_task(fname):
-  with open(fname, 'r') as f:
-    lines = f.readlines()
-  return lines
 
 if __name__ == "__main__":
   import yaml
