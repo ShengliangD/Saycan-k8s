@@ -1,77 +1,52 @@
 import numpy as np
 import torch
+import time
+
+DEVICE='cuda'
 
 overwrite_cache = True
 if overwrite_cache:
   LLM_CACHE = {}
 
 from transformers import GPT2Tokenizer, OPTForCausalLM
-model = OPTForCausalLM.from_pretrained("facebook/opt-125m")
-tokenizer = GPT2Tokenizer.from_pretrained("facebook/opt-125m")
+# available: 125m, 350m, 1.3b, 2.7b, 6.7b, 13b, 30b, 66b
+model = OPTForCausalLM.from_pretrained("facebook/opt-125m", device_map="auto")
+tokenizer = GPT2Tokenizer.from_pretrained("facebook/opt-125m", device_map='auto')
 
-def opt_call(prompt, start_idx):
-  rets = {'choices': []}
-  for p in prompt:
-    prompt_inputs = tokenizer(p[:start_idx], return_tensors="pt").input_ids
-    option_inputs = tokenizer(p[start_idx:], return_tensors="pt").input_ids[:, 1:] # skip <s/>
-    logits = []
-    tokens = []
-    for i in range(0, len(option_inputs[0])):
-      # Generate
-      ret = model.generate(torch.concat([prompt_inputs, option_inputs[:, :i]], dim=1), max_new_tokens=1, output_scores=True, return_dict_in_generate=True, renormalize_logits=True, temperature=0.0)
-      tokens.append(tokenizer.decode(option_inputs[0][i]))
-      logits.append(ret['scores'][0][0][option_inputs[0][i]].item())
-    rets['choices'].append({'logprobs': {'tokens': tokens, 'token_logprobs': logits}})
+def opt_call(prompt, options):
+  rets = {'choices': [{'logprobs': {'tokens': [], 'token_logprobs': []}} for _ in range(len(options))]}
+  prompt_tokens = tokenizer(prompt, padding=True, return_tensors="pt")
+  prompt_tokens_len = len(prompt_tokens.input_ids[0])
+
+  options_tokens = tokenizer(options, padding=True, return_tensors="pt")
+  options_tokens.input_ids = options_tokens.input_ids[:, 1:].to(DEVICE) # skip <s/>
+  options_tokens.attention_mask = options_tokens.attention_mask[:, 1:].to(DEVICE) # skip <s/>
+  # set pad tokens to another special token to avoid detected as right padding
+  # does not affect the result as we will stop at the end of each option
+  options_tokens.input_ids[options_tokens.attention_mask == 0] = 2
+  options_tokens_lens = [sum(options_tokens.attention_mask[i]) for i in range(len(options))]
+
+  # concat prompt and options for later batch input
+  prompt_tokens.input_ids = prompt_tokens.input_ids.repeat(len(options), 1).to(DEVICE)
+  prompt_tokens.attention_mask = prompt_tokens.attention_mask.repeat(len(options), 1).to(DEVICE)
+  input_tokens = torch.concat([prompt_tokens.input_ids, options_tokens.input_ids], dim=1)
+  input_masks = torch.concat([prompt_tokens.attention_mask, options_tokens.attention_mask], dim=1)
+
+  for i in range(prompt_tokens_len, len(input_tokens[0])):
+    ret = model.generate(input_tokens[:, :i], attention_mask=input_masks[:, :i], max_new_tokens=1, output_scores=True, return_dict_in_generate=True, renormalize_logits=True, temperature=0.0)
+    for j in range(len(options)):
+      if i - prompt_tokens_len >= options_tokens_lens[j]:
+        continue
+      rets['choices'][j]['logprobs']['tokens'].append(tokenizer.decode(input_tokens[j][i]))
+      rets['choices'][j]['logprobs']['token_logprobs'].append(ret['scores'][0][j][input_tokens[j][i]].item())
+
   return rets
-
-def gpt3_call(engine="text-ada-001", prompt="", max_tokens=128, temperature=0, 
-              logprobs=1, echo=False):
-  # return a dummy response
-  import math
-  import random
-  resp = {
-    "choices": [
-        {
-            "logprobs": {
-                "tokens": [
-                    "this",
-                    "is",
-                    "a",
-                    "test",
-                    "of",
-                ],
-                "token_logprobs": [
-                    math.log(random.random(), 2)
-                ]*5
-            }
-        } for _ in range(len(prompt))
-    ]
-  }
-  return resp
-  import openai
-  full_query = ""
-  for p in prompt:
-    full_query += p
-  id = tuple((engine, full_query, max_tokens, temperature, logprobs, echo))
-  if id in LLM_CACHE.keys():
-    print('cache hit, returning')
-    response = LLM_CACHE[id]
-  else:
-    response = openai.Completion.create(engine=engine, 
-                                        prompt=prompt, 
-                                        max_tokens=max_tokens, 
-                                        temperature=temperature,
-                                        logprobs=logprobs,
-                                        echo=echo)
-    LLM_CACHE[id] = response
-  return response
 
 def gpt3_scoring(query, options, limit_num_options=None, verbose=False, print_tokens=False):
   if limit_num_options:
     options = options[:limit_num_options]
   verbose and print("Scoring", len(options), "options")
-  gpt3_prompt_options = [query + option for option in options]
-  response = opt_call(gpt3_prompt_options, start_idx=len(query))
+  response = opt_call(query, options)
 
   scores = {}
   for option, choice in zip(options, response["choices"]):
@@ -111,7 +86,7 @@ def make_plan(context, command, options, terminate_string, affordance_scores, ma
       break
 
     llm_scores, _ = gpt3_scoring(gpt3_prompt, options, verbose=True, print_tokens=False)
-    combined_scores = {option: np.exp(llm_scores[option]) * affordance_scores[option] for option in options}
+    combined_scores = {option: np.exp(llm_scores[option]) * affordance_scores[option] for option in options if num_tasks > 1 or option != terminate_string}
     combined_scores = normalize_scores(combined_scores)
     selected_task = max(combined_scores, key=combined_scores.get)
     steps_text.append(selected_task)
@@ -133,11 +108,16 @@ def make_plan(context, command, options, terminate_string, affordance_scores, ma
 if __name__ == "__main__":
   import yaml
   import sys
-  task_def = yaml.load(open(sys.argv[1], 'r'), Loader=yaml.FullLoader)
-  context = task_def['context']
-  command = task_def['command']
-  options = {opt['text']: opt['affordance'] for opt in task_def['options']}
-  termination_string = task_def['termination_string']
-  max_steps = task_def['max_steps']
-  options[termination_string] = 1/max_steps
-  make_plan(context, command, options, termination_string, options, max_steps, verbose=True, print_tokens=False)
+  while True:
+      tbegin = time.time()
+      print('===================')
+      task_def = yaml.load(open(sys.argv[1], 'r'), Loader=yaml.FullLoader)
+      context = task_def['context']
+      command = task_def['command']
+      options = {opt['text']: opt['affordance'] for opt in task_def['options']}
+      termination_string = task_def['termination_string']
+      max_steps = task_def['max_steps']
+      options[termination_string] = 1/(max_steps+1)
+      make_plan(context, command, list(options.keys()), termination_string, options, max_steps, verbose=True, print_tokens=False)
+      tend = time.time()
+      print(f':: time {tend-tbegin}')
