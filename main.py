@@ -1,6 +1,27 @@
 import numpy as np
 import torch
+import torch.distributed.rpc as rpc
+from torch.distributed.nn.api.remote_module import RemoteModule
+RemoteModule._backward_hooks = {}
+RemoteModule._forward_hooks = {}
+RemoteModule._forward_pre_hooks = {}
 import time
+import os
+import sys
+import accelerate
+import yaml
+from transformers import AutoConfig
+from transformers import GPT2Tokenizer, OPTForCausalLM
+
+# we have to wrap a library function to make it ignore Identity layers
+import accelerate.utils.modeling
+orig_set_module_tensor_to_device = accelerate.utils.modeling.set_module_tensor_to_device
+def permisive_set_module_tensor_to_device(*args, **kwargs):
+  try:
+    return orig_set_module_tensor_to_device(*args, **kwargs)
+  except AttributeError:
+    pass
+accelerate.utils.modeling.set_module_tensor_to_device = permisive_set_module_tensor_to_device
 
 DEVICE='cuda'
 
@@ -8,10 +29,19 @@ overwrite_cache = True
 if overwrite_cache:
   LLM_CACHE = {}
 
-from transformers import GPT2Tokenizer, OPTForCausalLM
+leader_ip = '127.0.0.1'
+leader_port = '29500'
+task_file = sys.argv[1]
+world_size = int(sys.argv[2])
+rank = int(sys.argv[3])
+
 # available: 125m, 350m, 1.3b, 2.7b, 6.7b, 13b, 30b, 66b
-model = OPTForCausalLM.from_pretrained("facebook/opt-125m", device_map="auto")
-tokenizer = GPT2Tokenizer.from_pretrained("facebook/opt-125m", device_map='auto')
+model_name = 'facebook/opt-125m'
+checkpoint_path = '/root/.cache/huggingface/hub/models--facebook--opt-125m/snapshots/934b6a077313f3ee660a918a95313f5d0b136c5a/pytorch_model.bin'
+LLM = OPTForCausalLM
+
+os.environ['MASTER_ADDR'] = leader_ip
+os.environ['MASTER_PORT'] = leader_port
 
 def opt_call(prompt, options):
   rets = {'choices': [{'logprobs': {'tokens': [], 'token_logprobs': []}} for _ in range(len(options))]}
@@ -105,13 +135,58 @@ def make_plan(context, command, options, terminate_string, affordance_scores, ma
     print('Step ' + str(i) + ': ' + step)
   return steps_text
 
+
+def load_part(model_name, start_idx, end_idx):
+  """Load layers [start_idx:end_idx], then return as a module list."""
+  config = AutoConfig.from_pretrained(model_name)
+  with accelerate.init_empty_weights():
+    model = LLM._from_config(config)
+  # skip loading other layers by replacing them with torch.nn.Identity
+  for i in range(0, start_idx):
+    model.model.decoder.layers[i] = torch.nn.Identity()
+  for i in range(end_idx, len(model.model.decoder.layers)):
+    model.model.decoder.layers[i] = torch.nn.Identity()
+
+  # load weights
+  accelerate.load_checkpoint_and_dispatch(model, checkpoint_path, device_map='auto')
+
+  layers = model.model.decoder.layers[start_idx:end_idx]
+  return torch.nn.ModuleList(layers)
+
+
 if __name__ == "__main__":
-  import yaml
-  import sys
+  options = rpc.TensorPipeRpcBackendOptions()
+  for i in range(world_size):
+    for j in range(torch.cuda.device_count()):
+      options.set_device_map(f'worker{i}', {f'cuda:{j}': f'cuda:{j}'})
+  torch.distributed.rpc.init_rpc(f'worker{rank}', rank=rank, world_size=world_size, rpc_backend_options=options)
+
+  if rank == 0:
+    tokenizer = GPT2Tokenizer.from_pretrained(model_name, device_map='auto')
+    config = AutoConfig.from_pretrained(model_name)
+    with accelerate.init_empty_weights():
+      model = LLM._from_config(config)
+
+    # replace all layers with torch.nn.Identity
+    num_layers = len(model.model.decoder.layers)
+    model.model.decoder.layers = torch.nn.ModuleList([torch.nn.Identity() for _ in range(num_layers)])
+
+    # then load the model weights
+    accelerate.load_checkpoint_and_dispatch(model, checkpoint_path, device_map='auto')
+
+    remote_layers = torch.nn.ModuleList()
+    for r, arr in enumerate(np.array_split(range(num_layers), world_size)):
+      start = arr[0]
+      end = arr[-1] + 1
+      rref = rpc.remote(f'worker{r}', load_part, args=(model_name, start, end))
+      module = RemoteModule.init_from_module_rref(f'worker{r}', rref)
+      remote_layers.append(module)
+    model.model.decoder.layers = remote_layers
+
   while True:
       tbegin = time.time()
       print('===================')
-      task_def = yaml.load(open(sys.argv[1], 'r'), Loader=yaml.FullLoader)
+      task_def = yaml.load(open(task_file, 'r'), Loader=yaml.FullLoader)
       context = task_def['context']
       command = task_def['command']
       options = {opt['text']: opt['affordance'] for opt in task_def['options']}
