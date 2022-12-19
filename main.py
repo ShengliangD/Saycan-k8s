@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from torch import nn
 import torch.distributed.rpc as rpc
 from torch.distributed.nn.api.remote_module import RemoteModule
 RemoteModule._backward_hooks = {}
@@ -136,22 +137,49 @@ def make_plan(context, command, options, terminate_string, affordance_scores, ma
   return steps_text
 
 
-def load_part(model_name, start_idx, end_idx):
+def convert_meta_to_device(module, device):
+  """Replace all meta tensors in the module with real tensors, recursively."""
+  for name, param in module._parameters.items():
+    if param is not None and param.is_meta:
+      module._parameters[name] = param.new_empty(param.size(),device=device)
+  for name, buf in module._buffers.items():
+    if buf is not None and buf.is_meta():
+      module._buffers[name] = buf.new_empty(buf.size(),device='device')
+  for name, module in module._modules.items():
+    if module is not None:
+      convert_meta_to_device(module, device)
+
+
+class SequentialDecoders(torch.nn.Sequential):
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+
+  def forward(self, *args, **kwargs):
+    for module in self:
+      args, kwargs = module(*args, **kwargs)
+    return args, kwargs
+
+
+def load_part(model_name, start_idx, end_idx, device):
   """Load layers [start_idx:end_idx], then return as a module list."""
   config = AutoConfig.from_pretrained(model_name)
   with accelerate.init_empty_weights():
     model = LLM._from_config(config)
+    model.half()
   # skip loading other layers by replacing them with torch.nn.Identity
   for i in range(0, start_idx):
     model.model.decoder.layers[i] = torch.nn.Identity()
   for i in range(end_idx, len(model.model.decoder.layers)):
     model.model.decoder.layers[i] = torch.nn.Identity()
 
-  # load weights
-  accelerate.load_checkpoint_and_dispatch(model, checkpoint_path, device_map='auto')
+  for i in range(start_idx, end_idx):
+    convert_meta_to_device(model.model.decoder.layers[i], device)
+
+  state_dict = torch.load(checkpoint_path)
+  model.load_state_dict(state_dict, strict=True)
 
   layers = model.model.decoder.layers[start_idx:end_idx]
-  return torch.nn.ModuleList(layers)
+  return SequentialDecoders(*layers)
 
 
 if __name__ == "__main__":
@@ -162,23 +190,27 @@ if __name__ == "__main__":
   torch.distributed.rpc.init_rpc(f'worker{rank}', rank=rank, world_size=world_size, rpc_backend_options=options)
 
   if rank == 0:
-    tokenizer = GPT2Tokenizer.from_pretrained(model_name, device_map='auto')
+    tokenizer = GPT2Tokenizer.from_pretrained(model_name, device_map='sequential')
     config = AutoConfig.from_pretrained(model_name)
     with accelerate.init_empty_weights():
       model = LLM._from_config(config)
+      model.half()
 
     # replace all layers with torch.nn.Identity
     num_layers = len(model.model.decoder.layers)
-    model.model.decoder.layers = torch.nn.ModuleList([torch.nn.Identity() for _ in range(num_layers)])
+    model.model.decoder.layers = torch.nn.ModuleList([])
 
     # then load the model weights
-    accelerate.load_checkpoint_and_dispatch(model, checkpoint_path, device_map='auto')
+    accelerate.load_checkpoint_and_dispatch(model, checkpoint_path, device_map='sequential')
 
     remote_layers = torch.nn.ModuleList()
     for r, arr in enumerate(np.array_split(range(num_layers), world_size)):
       start = arr[0]
       end = arr[-1] + 1
-      rref = rpc.remote(f'worker{r}', load_part, args=(model_name, start, end))
+      # for debugging
+      load_part(model_name, start, end, DEVICE)
+
+      rref = rpc.remote(f'worker{r}', load_part, args=(model_name, start, end, DEVICE))
       module = RemoteModule.init_from_module_rref(f'worker{r}', rref)
       remote_layers.append(module)
     model.model.decoder.layers = remote_layers

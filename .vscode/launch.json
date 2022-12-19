@@ -10,8 +10,8 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "args": ["tasks/pick_objects.yaml"],
-            "justMyCode": true
+            "args": ["tasks/pick_objects.yaml", "1", "0"],
+            "justMyCode": false
         }
     ]
 }
