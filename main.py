@@ -1,6 +1,5 @@
 import numpy as np
 import torch
-from torch import nn
 import torch.distributed.rpc as rpc
 from torch.distributed.nn.api.remote_module import RemoteModule
 RemoteModule._backward_hooks = {}
@@ -13,6 +12,7 @@ import accelerate
 import yaml
 from transformers import AutoConfig
 from transformers import GPT2Tokenizer, OPTForCausalLM
+from typing import List, Optional, Tuple
 
 # we have to wrap a library function to make it ignore Identity layers
 import accelerate.utils.modeling
@@ -154,10 +154,34 @@ class SequentialDecoders(torch.nn.Sequential):
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
 
-  def forward(self, *args, **kwargs):
-    for module in self:
-      args, kwargs = module(*args, **kwargs)
-    return args, kwargs
+  def forward(self, hidden_states: torch.Tensor,
+              attention_mask: Optional[torch.Tensor] = None,
+              layer_head_mask: Optional[torch.Tensor] = None,
+              output_attentions: Optional[bool] = False,
+              use_cache: Optional[bool] = False,
+              past_key_value: Optional[Tuple[torch.Tensor]] = None):
+    # doesn't work for the following params, early fail if used
+    assert layer_head_mask is None
+    assert output_attentions is False
+    assert past_key_value is None
+    assert not self.training
+
+    for idx, decoder_layer in enumerate(self):
+      layer_outputs = decoder_layer(
+          hidden_states,
+          attention_mask=attention_mask,
+          layer_head_mask=layer_head_mask,
+          past_key_value=past_key_value,
+          output_attentions=output_attentions,
+          use_cache=use_cache,
+      )
+
+      hidden_states = layer_outputs[0]
+
+    if use_cache:
+      layer_outputs += (past_key_value,)
+
+    return layer_outputs
 
 
 def load_part(model_name, start_idx, end_idx, device):
@@ -165,6 +189,7 @@ def load_part(model_name, start_idx, end_idx, device):
   config = AutoConfig.from_pretrained(model_name)
   with accelerate.init_empty_weights():
     model = LLM._from_config(config)
+    model.eval()
     model.half()
   # skip loading other layers by replacing them with torch.nn.Identity
   for i in range(0, start_idx):
@@ -175,11 +200,14 @@ def load_part(model_name, start_idx, end_idx, device):
   for i in range(start_idx, end_idx):
     convert_meta_to_device(model.model.decoder.layers[i], device)
 
+  # accelerate.load_and_dispatch() causes pickling error, so use torch.load() instead
   state_dict = torch.load(checkpoint_path)
   model.load_state_dict(state_dict, strict=True)
 
   layers = model.model.decoder.layers[start_idx:end_idx]
-  return SequentialDecoders(*layers)
+  ret = SequentialDecoders(*layers)
+  ret.eval()
+  return ret
 
 
 if __name__ == "__main__":
@@ -194,6 +222,7 @@ if __name__ == "__main__":
     config = AutoConfig.from_pretrained(model_name)
     with accelerate.init_empty_weights():
       model = LLM._from_config(config)
+      model.eval()
       model.half()
 
     # replace all layers with torch.nn.Identity
@@ -204,6 +233,7 @@ if __name__ == "__main__":
     accelerate.load_checkpoint_and_dispatch(model, checkpoint_path, device_map='sequential')
 
     remote_layers = torch.nn.ModuleList()
+    remote_layers.eval()
     for r, arr in enumerate(np.array_split(range(num_layers), world_size)):
       start = arr[0]
       end = arr[-1] + 1
