@@ -12,7 +12,7 @@ import accelerate
 import yaml
 from transformers import AutoConfig
 from transformers import GPT2Tokenizer, OPTForCausalLM
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 # we have to wrap a library function to make it ignore Identity layers
 import accelerate.utils.modeling
@@ -37,12 +37,22 @@ world_size = int(sys.argv[2])
 rank = int(sys.argv[3])
 
 # available: 125m, 350m, 1.3b, 2.7b, 6.7b, 13b, 30b, 66b
-model_name = 'facebook/opt-125m'
-checkpoint_path = '/root/.cache/huggingface/hub/models--facebook--opt-125m/snapshots/934b6a077313f3ee660a918a95313f5d0b136c5a/pytorch_model.bin'
 LLM = OPTForCausalLM
+model_name = 'facebook/opt-125m'
+def find_checkpoint_path(model_name):
+  parts = model_name.split('/')
+  dirs = os.listdir(f'/root/.cache/huggingface/hub/models--{parts[0]}--{parts[1]}/snapshots')
+  if len(dirs) == 0:
+    # populate
+    model = LLM.from_pretrained(model_name)
+    del model
+    dirs = os.listdir(f'/root/.cache/huggingface/hub/models--{parts[0]}--{parts[1]}/snapshots')
+  return f'/root/.cache/huggingface/hub/models--{parts[0]}--{parts[1]}/snapshots/{dirs[0]}/pytorch_model.bin'
+checkpoint_path = find_checkpoint_path(model_name)
 
 os.environ['MASTER_ADDR'] = leader_ip
 os.environ['MASTER_PORT'] = leader_port
+
 
 def opt_call(prompt, options):
   rets = {'choices': [{'logprobs': {'tokens': [], 'token_logprobs': []}} for _ in range(len(options))]}
@@ -73,6 +83,7 @@ def opt_call(prompt, options):
 
   return rets
 
+
 def gpt3_scoring(query, options, limit_num_options=None, verbose=False, print_tokens=False):
   if limit_num_options:
     options = options[:limit_num_options]
@@ -97,10 +108,12 @@ def gpt3_scoring(query, options, limit_num_options=None, verbose=False, print_to
 
   return scores, response
 
+
 def normalize_scores(scores):
   max_score = max(scores.values())  
   normed_scores = {key: np.clip(scores[key] / max_score, 0, 1) for key in scores}
   return normed_scores
+
 
 def make_plan(context, command, options, terminate_string, affordance_scores, max_tasks=5, verbose=False, engine="text-ada-001", print_tokens=False):
   gpt3_prompt = context + "\n" + command + "\n"
@@ -202,7 +215,7 @@ def load_part(model_name, start_idx, end_idx, device):
 
   # accelerate.load_and_dispatch() causes pickling error, so use torch.load() instead
   state_dict = torch.load(checkpoint_path)
-  model.load_state_dict(state_dict, strict=True)
+  model.load_state_dict(state_dict, strict=False)
 
   layers = model.model.decoder.layers[start_idx:end_idx]
   ret = SequentialDecoders(*layers)
@@ -245,16 +258,18 @@ if __name__ == "__main__":
       remote_layers.append(module)
     model.model.decoder.layers = remote_layers
 
-  while True:
-      tbegin = time.time()
-      print('===================')
-      task_def = yaml.load(open(task_file, 'r'), Loader=yaml.FullLoader)
-      context = task_def['context']
-      command = task_def['command']
-      options = {opt['text']: opt['affordance'] for opt in task_def['options']}
-      termination_string = task_def['termination_string']
-      max_steps = task_def['max_steps']
-      options[termination_string] = 1/(max_steps+1)
-      make_plan(context, command, list(options.keys()), termination_string, options, max_steps, verbose=True, print_tokens=False)
-      tend = time.time()
-      print(f':: time {tend-tbegin}')
+    while True:
+        tbegin = time.time()
+        print('===================')
+        task_def = yaml.load(open(task_file, 'r'), Loader=yaml.FullLoader)
+        context = task_def['context']
+        command = task_def['command']
+        options = {opt['text']: opt['affordance'] for opt in task_def['options']}
+        termination_string = task_def['termination_string']
+        max_steps = task_def['max_steps']
+        options[termination_string] = 1/(max_steps+1)
+        make_plan(context, command, list(options.keys()), termination_string, options, max_steps, verbose=True, print_tokens=False)
+        tend = time.time()
+        print(f':: time {tend-tbegin}')
+
+  rpc.shutdown()
