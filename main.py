@@ -38,10 +38,10 @@ arg_parser.add_argument('--leader-port', type=str, default='29500')
 arg_parser.add_argument('--task-file', type=str)
 arg_parser.add_argument('--world-size', type=int)
 arg_parser.add_argument('--rank', type=int)
-arg_parser.add_argument('--model_name', type=str, default='facebook/opt-125m')
+# available: 125m, 350m, 1.3b, 2.7b, 6.7b, 13b, 30b, 66b
+arg_parser.add_argument('--model_name', type=str, default='facebook/opt-1.3b')
 args = arg_parser.parse_args()
 
-# available: 125m, 350m, 1.3b, 2.7b, 6.7b, 13b, 30b, 66b
 LLM = OPTForCausalLM
 def find_checkpoint_path(model_name):
   parts = model_name.split('/')
@@ -78,7 +78,9 @@ def opt_call(prompt, options):
   input_masks = torch.concat([prompt_tokens.attention_mask, options_tokens.attention_mask], dim=1)
 
   for i in range(prompt_tokens_len, len(input_tokens[0])):
-    ret = model.generate(input_tokens[:, :i], attention_mask=input_masks[:, :i], max_new_tokens=1, output_scores=True, return_dict_in_generate=True, renormalize_logits=True, temperature=0.0)
+    ret = model.generate(input_tokens[:, :i], attention_mask=input_masks[:, :i], max_new_tokens=1, output_scores=True, return_dict_in_generate=True, renormalize_logits=True, temperature=0.0, use_cache=False)
+    if DEVICE == 'cuda':
+      torch.cuda.empty_cache()
     for j in range(len(options)):
       if i - prompt_tokens_len >= options_tokens_lens[j]:
         continue
@@ -198,6 +200,9 @@ class SequentialDecoders(torch.nn.Sequential):
     if use_cache:
       layer_outputs += (past_key_value,)
 
+    if DEVICE == 'cuda':
+      torch.cuda.empty_cache()
+
     return layer_outputs
 
 
@@ -227,6 +232,11 @@ def load_part(model_name, start_idx, end_idx, device):
   return ret
 
 
+def estimate_size(m):
+  """Estimate size of a model in Mbytes."""
+  return sum(p.numel() * p.element_size() for p in m.parameters())*2/1024/1024
+
+
 if __name__ == "__main__":
   options = rpc.TensorPipeRpcBackendOptions()
   for i in range(args.world_size):
@@ -254,8 +264,6 @@ if __name__ == "__main__":
     for r, arr in enumerate(np.array_split(range(num_layers), args.world_size)):
       start = arr[0]
       end = arr[-1] + 1
-      # for debugging
-      load_part(args.model_name, start, end, DEVICE)
 
       rref = rpc.remote(f'worker{r}', load_part, args=(args.model_name, start, end, DEVICE))
       module = RemoteModule.init_from_module_rref(f'worker{r}', rref)

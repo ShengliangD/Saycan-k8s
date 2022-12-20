@@ -10,7 +10,7 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "args": ["tasks/pick_objects.yaml", "1", "0"],
+            "args": ["--task", "tasks/pick_objects.yaml", "--world-size", "2", "--rank", "0"],
             "justMyCode": false
         }
     ]
