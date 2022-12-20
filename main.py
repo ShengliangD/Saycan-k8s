@@ -8,12 +8,12 @@ RemoteModule._forward_hooks = {}
 RemoteModule._forward_pre_hooks = {}
 import time
 import os
-import sys
 import accelerate
 import yaml
 from transformers import AutoConfig
 from transformers import GPT2Tokenizer, OPTForCausalLM
 from typing import Optional, Tuple
+import argparse
 
 # we have to wrap a library function to make it ignore Identity layers
 import accelerate.utils.modeling
@@ -31,15 +31,18 @@ overwrite_cache = True
 if overwrite_cache:
   LLM_CACHE = {}
 
-leader_ip = '127.0.0.1'
-leader_port = '29500'
-task_file = sys.argv[1]
-world_size = int(sys.argv[2])
-rank = int(sys.argv[3])
+# argument parser
+arg_parser = argparse.ArgumentParser()
+arg_parser.add_argument('--leader-ip', type=str, default='127.0.0.1')
+arg_parser.add_argument('--leader-port', type=str, default='29500')
+arg_parser.add_argument('--task-file', type=str)
+arg_parser.add_argument('--world-size', type=int)
+arg_parser.add_argument('--rank', type=int)
+arg_parser.add_argument('--model_name', type=str, default='facebook/opt-125m')
+args = arg_parser.parse_args()
 
 # available: 125m, 350m, 1.3b, 2.7b, 6.7b, 13b, 30b, 66b
 LLM = OPTForCausalLM
-model_name = 'facebook/opt-125m'
 def find_checkpoint_path(model_name):
   parts = model_name.split('/')
   dirs = os.listdir(f'/root/.cache/huggingface/hub/models--{parts[0]}--{parts[1]}/snapshots')
@@ -49,10 +52,10 @@ def find_checkpoint_path(model_name):
     del model
     dirs = os.listdir(f'/root/.cache/huggingface/hub/models--{parts[0]}--{parts[1]}/snapshots')
   return f'/root/.cache/huggingface/hub/models--{parts[0]}--{parts[1]}/snapshots/{dirs[0]}/pytorch_model.bin'
-checkpoint_path = find_checkpoint_path(model_name)
+checkpoint_path = find_checkpoint_path(args.model_name)
 
-os.environ['MASTER_ADDR'] = leader_ip
-os.environ['MASTER_PORT'] = leader_port
+os.environ['MASTER_ADDR'] = args.leader_ip
+os.environ['MASTER_PORT'] = args.leader_port
 
 
 def opt_call(prompt, options):
@@ -226,14 +229,14 @@ def load_part(model_name, start_idx, end_idx, device):
 
 if __name__ == "__main__":
   options = rpc.TensorPipeRpcBackendOptions()
-  for i in range(world_size):
+  for i in range(args.world_size):
     for j in range(torch.cuda.device_count()):
       options.set_device_map(f'worker{i}', {f'cuda:{j}': f'cuda:{j}'})
-  torch.distributed.rpc.init_rpc(f'worker{rank}', rank=rank, world_size=world_size, rpc_backend_options=options)
+  torch.distributed.rpc.init_rpc(f'worker{args.rank}', rank=args.rank, world_size=args.world_size, rpc_backend_options=options)
 
-  if rank == 0:
-    tokenizer = GPT2Tokenizer.from_pretrained(model_name, device_map='sequential')
-    config = AutoConfig.from_pretrained(model_name)
+  if args.rank == 0:
+    tokenizer = GPT2Tokenizer.from_pretrained(args.model_name, device_map='sequential')
+    config = AutoConfig.from_pretrained(args.model_name)
     with accelerate.init_empty_weights():
       model = LLM._from_config(config)
       model.eval()
@@ -248,13 +251,13 @@ if __name__ == "__main__":
 
     remote_layers = torch.nn.ModuleList()
     remote_layers.eval()
-    for r, arr in enumerate(np.array_split(range(num_layers), world_size)):
+    for r, arr in enumerate(np.array_split(range(num_layers), args.world_size)):
       start = arr[0]
       end = arr[-1] + 1
       # for debugging
-      load_part(model_name, start, end, DEVICE)
+      load_part(args.model_name, start, end, DEVICE)
 
-      rref = rpc.remote(f'worker{r}', load_part, args=(model_name, start, end, DEVICE))
+      rref = rpc.remote(f'worker{r}', load_part, args=(args.model_name, start, end, DEVICE))
       module = RemoteModule.init_from_module_rref(f'worker{r}', rref)
       remote_layers.append(module)
     model.model.decoder.layers = remote_layers
@@ -262,7 +265,7 @@ if __name__ == "__main__":
     while True:
         tbegin = time.time()
         print('===================')
-        task_def = yaml.load(open(task_file, 'r'), Loader=yaml.FullLoader)
+        task_def = yaml.load(open(args.task_file, 'r'), Loader=yaml.FullLoader)
         context = task_def['context']
         command = task_def['command']
         options = {opt['text']: opt['affordance'] for opt in task_def['options']}
