@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+torch.set_grad_enabled(False)
 import torch.distributed.rpc as rpc
 from torch.distributed.nn.api.remote_module import RemoteModule
 RemoteModule._backward_hooks = {}
