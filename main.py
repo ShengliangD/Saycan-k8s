@@ -45,11 +45,13 @@ args = arg_parser.parse_args()
 LLM = OPTForCausalLM
 def find_checkpoint_path(model_name):
   parts = model_name.split('/')
-  dirs = os.listdir(f'/root/.cache/huggingface/hub/models--{parts[0]}--{parts[1]}/snapshots')
+  try:
+    dirs = os.listdir(f'/root/.cache/huggingface/hub/models--{parts[0]}--{parts[1]}/snapshots')
+  except FileNotFoundError:
+    dirs = []
   if len(dirs) == 0:
-    # populate
-    model = LLM.from_pretrained(model_name)
-    del model
+    import huggingface_hub
+    huggingface_hub.hf_hub_download(repo_id=model_name, filename='pytorch_model.bin')
     dirs = os.listdir(f'/root/.cache/huggingface/hub/models--{parts[0]}--{parts[1]}/snapshots')
   return f'/root/.cache/huggingface/hub/models--{parts[0]}--{parts[1]}/snapshots/{dirs[0]}/pytorch_model.bin'
 checkpoint_path = find_checkpoint_path(args.model_name)
