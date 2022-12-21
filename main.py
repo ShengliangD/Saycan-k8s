@@ -58,6 +58,7 @@ checkpoint_path = find_checkpoint_path(args.model_name)
 
 os.environ['MASTER_ADDR'] = args.leader_ip
 os.environ['MASTER_PORT'] = args.leader_port
+assert 'GLOO_SOCKET_IFNAME' in os.environ and 'TP_SOCKET_IFNAME' in os.environ and os.environ['GLOO_SOCKET_IFNAME'] == os.environ['TP_SOCKET_IFNAME'], 'you have to set GLOO_SOCKET_IFNAME and TP_SOCKET_IFNAME to make torch.distributed.rpc init on multiple machines'
 
 
 def opt_call(prompt, options):
