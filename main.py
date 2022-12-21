@@ -39,7 +39,7 @@ arg_parser.add_argument('--task-file', type=str)
 arg_parser.add_argument('--world-size', type=int)
 arg_parser.add_argument('--rank', type=int)
 # available: 125m, 350m, 1.3b, 2.7b, 6.7b, 13b, 30b, 66b
-arg_parser.add_argument('--model_name', type=str, default='facebook/opt-1.3b')
+arg_parser.add_argument('--model-name', type=str, default='facebook/opt-1.3b')
 args = arg_parser.parse_args()
 
 LLM = OPTForCausalLM
