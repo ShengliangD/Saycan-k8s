@@ -14,6 +14,7 @@ from transformers import AutoConfig
 from transformers import GPT2Tokenizer, OPTForCausalLM
 from typing import Optional, Tuple
 import argparse
+import socket
 
 # we have to wrap a library function to make it ignore Identity layers
 import accelerate.utils.modeling
@@ -41,6 +42,8 @@ arg_parser.add_argument('--rank', type=int)
 # available: 125m, 350m, 1.3b, 2.7b, 6.7b, 13b, 30b, 66b
 arg_parser.add_argument('--model-name', type=str, default='facebook/opt-1.3b')
 args = arg_parser.parse_args()
+# we may use a hostname instead of an IP address
+args.leader_ip = socket.gethostbyname(args.leader_ip)
 
 LLM = OPTForCausalLM
 def find_checkpoint_path(model_name):
