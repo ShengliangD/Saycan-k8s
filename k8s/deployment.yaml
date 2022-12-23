@@ -26,6 +26,8 @@ spec:
             value: "eth0"
           - name: TP_SOCKET_IFNAME
             value: "eth0"
+          - name: PYTHONUNBUFFERED
+            value: "1"
           command: ["python3", "main.py", "--task-file", "tasks/pick_objects.yaml", "--world-size", "2", "--rank", "0", "--model-name", "facebook/opt-1.3b", "--leader-ip", "app-saycan-leader"]
           ports:
           - containerPort: 29500
@@ -42,6 +44,8 @@ spec:
             value: "eth0"
           - name: TP_SOCKET_IFNAME
             value: "eth0"
+          - name: PYTHONUNBUFFERED
+            value: "1"
           command: ["python3", "main.py", "--task-file", "tasks/pick_objects.yaml", "--world-size", "2", "--rank", "1", "--model-name", "facebook/opt-1.3b", "--leader-ip", "app-saycan-leader"]
 ---
 # expose app-saycan-leader so that other pods can connect to it with the service name
