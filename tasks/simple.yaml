@@ -1,0 +1,12 @@
+context: |
+  objects = [red block, blue block, green bowl, blue bowl, yellow block, green block]
+command:
+  "# put two different blocks into the green bowl"
+options:
+  - text: pick_and_place(blue block, green bowl)
+    affordance: 1.0
+  - text: pick_and_place(green block, green bowl)
+    affordance: 1.0
+termination_string:
+  done()
+max_steps: 5

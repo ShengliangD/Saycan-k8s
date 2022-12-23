@@ -18,6 +18,7 @@ spec:
           limits:
             memory: 5000Mi
             nvidia.com/gpu: 1
+        terminationGracePeriodSeconds: 0
         containers:
         - name: saycan-leader
           image: 10.42.0.5:5000/app-saycan:latest
@@ -28,7 +29,7 @@ spec:
             value: "eth0"
           - name: PYTHONUNBUFFERED
             value: "1"
-          command: ["python3", "main.py", "--task-file", "tasks/pick_objects.yaml", "--world-size", "2", "--rank", "0", "--model-name", "facebook/opt-1.3b", "--leader-ip", "app-saycan-leader"]
+          command: ["python3", "main.py", "--task-file", "tasks/simple.yaml", "--world-size", "2", "--rank", "0", "--model-name", "facebook/opt-1.3b", "--leader-ip", "app-saycan-leader"]
           ports:
           - containerPort: 29500
     - spec:
@@ -36,6 +37,7 @@ spec:
           limits:
             memory: 5000Mi
             nvidia.com/gpu: 1
+        terminationGracePeriodSeconds: 0
         containers:
         - name: saycan-worker
           image: 10.42.0.5:5000/app-saycan:latest
@@ -46,7 +48,7 @@ spec:
             value: "eth0"
           - name: PYTHONUNBUFFERED
             value: "1"
-          command: ["python3", "main.py", "--task-file", "tasks/pick_objects.yaml", "--world-size", "2", "--rank", "1", "--model-name", "facebook/opt-1.3b", "--leader-ip", "app-saycan-leader"]
+          command: ["python3", "main.py", "--world-size", "2", "--rank", "1", "--leader-ip", "app-saycan-leader"]
 ---
 # expose app-saycan-leader so that other pods can connect to it with the service name
 apiVersion: v1
