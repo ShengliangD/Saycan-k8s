@@ -12,7 +12,6 @@ spec:
     - metadata:
         labels:
           # for identifying the leader pod by the service defined later
-          app: saycan
           role: leader
       spec:
         resources:
@@ -21,6 +20,11 @@ spec:
         containers:
         - name: saycan-leader
           image: 10.42.0.5:5000/app-saycan:latest
+          env:
+          - name: GLOO_SOCKET_IFNAME
+            value: "eth0"
+          - name: TP_SOCKET_IFNAME
+            value: "eth0"
           command: ["python3", "main.py", "--task-file", "tasks/pick_objects.yaml", "--world-size", "2", "--rank", "0", "--model-name", "facebook/opt-1.3b", "--leader-ip", "app-saycan-leader"]
           ports:
           - containerPort: 29500
@@ -31,6 +35,11 @@ spec:
         containers:
         - name: saycan-worker
           image: 10.42.0.5:5000/app-saycan:latest
+          env:
+          - name: GLOO_SOCKET_IFNAME
+            value: "eth0"
+          - name: TP_SOCKET_IFNAME
+            value: "eth0"
           command: ["python3", "main.py", "--task-file", "tasks/pick_objects.yaml", "--world-size", "2", "--rank", "1", "--model-name", "facebook/opt-1.3b", "--leader-ip", "app-saycan-leader"]
 ---
 # expose app-saycan-leader so that other pods can connect to it with the service name
@@ -38,9 +47,10 @@ apiVersion: v1
 kind: Service
 metadata:
   name: app-saycan-leader
+  namespace: daros-apps
 spec:
   selector:
-    app: saycan
+    app: app-saycan
     role: leader
   ports:
   - protocol: TCP
