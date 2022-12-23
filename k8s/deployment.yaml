@@ -1,0 +1,48 @@
+apiVersion: daros.io/dev
+kind: DarosApp
+metadata:
+  name: app-saycan
+spec:
+  scheduleWeight: 1.0
+  configurations:
+  - name: config1
+    computationTime: 1.0
+    topology: "0 1 100"
+    pods:
+    - metadata:
+        labels:
+          # for identifying the leader pod by the service defined later
+          app: saycan
+          role: leader
+      spec:
+        resources:
+          limits:
+            memory: 5000Mi
+        containers:
+        - name: saycan-leader
+          image: 10.42.0.5:5000/app-saycan:latest
+          command: ["python3", "main.py", "--task-file", "tasks/pick_objects.yaml", "--world-size", "2", "--rank", "0", "--model-name", "facebook/opt-1.3b", "--leader-ip", "saycan-leader"]
+          ports:
+          - containerPort: 29500
+    - spec:
+        resources:
+          limits:
+            memory: 5000Mi
+        containers:
+        - name: saycan-worker
+          image: 10.42.0.5:5000/app-saycan:latest
+          command: ["python3", "main.py", "--task-file", "tasks/pick_objects.yaml", "--world-size", "2", "--rank", "1", "--model-name", "facebook/opt-1.3b", "--leader-ip", "saycan-leader"]
+--
+# expose app-saycan-leader so that other pods can connect to it with the service name
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-saycan-leader
+spec:
+  selector:
+    app: saycan
+    role: leader
+  ports:
+  - protocol: TCP
+    port: 29500
+    targetPort: 29500
