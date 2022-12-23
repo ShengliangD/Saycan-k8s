@@ -17,6 +17,7 @@ spec:
         resources:
           limits:
             memory: 5000Mi
+            nvidia.com/gpu: 1
         containers:
         - name: saycan-leader
           image: 10.42.0.5:5000/app-saycan:latest
@@ -32,6 +33,7 @@ spec:
         resources:
           limits:
             memory: 5000Mi
+            nvidia.com/gpu: 1
         containers:
         - name: saycan-worker
           image: 10.42.0.5:5000/app-saycan:latest
