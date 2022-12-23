@@ -52,7 +52,14 @@ arg_parser.add_argument('--rank', type=int)
 arg_parser.add_argument('--model-name', type=str, default='facebook/opt-1.3b')
 args = arg_parser.parse_args()
 # we may use a hostname instead of an IP address
-args.leader_ip = socket.gethostbyname(args.leader_ip)
+while True:
+  try:
+    args.leader_ip = socket.gethostbyname(args.leader_ip)
+    break
+  except:
+    logger.debug(f'failed to resolve {args.leader_ip}, retrying...')
+    time.sleep(0.1)
+logger.debug(f'resolved leader_ip {args.leader_ip}')
 
 LLM = OPTForCausalLM
 def find_checkpoint_path(model_name):
@@ -71,7 +78,7 @@ checkpoint_path = find_checkpoint_path(args.model_name)
 os.environ['MASTER_ADDR'] = args.leader_ip
 os.environ['MASTER_PORT'] = args.leader_port
 if not ('GLOO_SOCKET_IFNAME' in os.environ and 'TP_SOCKET_IFNAME' in os.environ and os.environ['GLOO_SOCKET_IFNAME'] == os.environ['TP_SOCKET_IFNAME']):
-  logging.warn('you may need to set GLOO_SOCKET_IFNAME and TP_SOCKET_IFNAME to make torch.distributed.rpc init on multiple machines')
+  logger.warning('you may need to set GLOO_SOCKET_IFNAME and TP_SOCKET_IFNAME to make torch.distributed.rpc init on multiple machines')
 
 
 def opt_call(prompt, options):
@@ -258,14 +265,14 @@ if __name__ == "__main__":
   for i in range(args.world_size):
     for j in range(torch.cuda.device_count()):
       options.set_device_map(f'worker{i}', {f'cuda:{j}': f'cuda:{j}'})
-  logging.debug('initializing rpc')
+  logger.debug('initializing rpc')
   torch.distributed.rpc.init_rpc(f'worker{args.rank}', rank=args.rank, world_size=args.world_size, rpc_backend_options=options)
-  logging.debug('rpc initialized')
+  logger.debug('rpc initialized')
 
   if args.rank == 0:
     tokenizer = GPT2Tokenizer.from_pretrained(args.model_name, device_map='sequential')
     config = AutoConfig.from_pretrained(args.model_name)
-    logging.debug('loading model structure')
+    logger.debug('loading model structure')
     with accelerate.init_empty_weights():
       model = LLM._from_config(config)
       model.eval()
@@ -276,13 +283,13 @@ if __name__ == "__main__":
     model.model.decoder.layers = torch.nn.ModuleList([])
 
     # then load the model weights
-    logging.debug('loading model weights excluding decoder layers')
+    logger.debug('loading model weights excluding decoder layers')
     accelerate.load_checkpoint_and_dispatch(model, checkpoint_path, device_map='sequential')
 
     remote_layers = torch.nn.ModuleList()
     remote_layers.eval()
     for r, arr in enumerate(np.array_split(range(num_layers), args.world_size)):
-      logging.debug(f'loading model decoder layers for worker {r}/{args.world_size-1}')
+      logger.debug(f'loading model decoder layers for worker {r}/{args.world_size-1}')
       start = arr[0]
       end = arr[-1] + 1
 
@@ -291,9 +298,9 @@ if __name__ == "__main__":
       remote_layers.append(module)
     model.model.decoder.layers = remote_layers
 
-    logging.debug('start')
+    logger.debug('start')
     while True:
-        logging.debug('===========================')
+        logger.debug('===========================')
         tbegin = time.time()
         task_def = yaml.load(open(args.task_file, 'r'), Loader=yaml.FullLoader)
         context = task_def['context']
@@ -304,6 +311,6 @@ if __name__ == "__main__":
         options[termination_string] = 1/(max_steps+1)
         make_plan(context, command, list(options.keys()), termination_string, options, max_steps, verbose=True, print_tokens=False)
         tend = time.time()
-        logging.debug(f'time spent: {tend-tbegin}')
+        logger.debug(f'time spent: {tend-tbegin}')
 
   rpc.shutdown()

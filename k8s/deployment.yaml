@@ -21,7 +21,7 @@ spec:
         containers:
         - name: saycan-leader
           image: 10.42.0.5:5000/app-saycan:latest
-          command: ["python3", "main.py", "--task-file", "tasks/pick_objects.yaml", "--world-size", "2", "--rank", "0", "--model-name", "facebook/opt-1.3b", "--leader-ip", "saycan-leader"]
+          command: ["python3", "main.py", "--task-file", "tasks/pick_objects.yaml", "--world-size", "2", "--rank", "0", "--model-name", "facebook/opt-1.3b", "--leader-ip", "app-saycan-leader"]
           ports:
           - containerPort: 29500
     - spec:
@@ -31,7 +31,7 @@ spec:
         containers:
         - name: saycan-worker
           image: 10.42.0.5:5000/app-saycan:latest
-          command: ["python3", "main.py", "--task-file", "tasks/pick_objects.yaml", "--world-size", "2", "--rank", "1", "--model-name", "facebook/opt-1.3b", "--leader-ip", "saycan-leader"]
+          command: ["python3", "main.py", "--task-file", "tasks/pick_objects.yaml", "--world-size", "2", "--rank", "1", "--model-name", "facebook/opt-1.3b", "--leader-ip", "app-saycan-leader"]
 ---
 # expose app-saycan-leader so that other pods can connect to it with the service name
 apiVersion: v1
