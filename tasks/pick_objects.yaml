@@ -38,13 +38,13 @@ context: |
 command:
   "# put two different blocks into the green bowl"
 options:
-  - text: pick_and_place(green bowl, blue block)
+  - text: robot.pick_and_place(green bowl, blue block)
     affordance: 1.0
-  - text: pick_and_place(blue block, green bowl)
+  - text: robot.pick_and_place(blue block, green bowl)
     affordance: 1.0
-  - text: pick_and_place(green block, green bowl)
+  - text: robot.pick_and_place(green block, green bowl)
     affordance: 1.0
-  - text: pick_and_place(yellow block, blue bowl)
+  - text: robot.pick_and_place(yellow block, blue bowl)
     affordance: 1.0
 termination_string:
   done()
