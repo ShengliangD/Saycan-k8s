@@ -21,7 +21,7 @@ spec:
         terminationGracePeriodSeconds: 0
         containers:
         - name: saycan-leader
-          image: 10.42.0.5:5000/app-saycan:latest
+          image: robot0:5000/app-saycan:latest
           env:
           - name: GLOO_SOCKET_IFNAME
             value: "eth0"
@@ -40,7 +40,7 @@ spec:
         terminationGracePeriodSeconds: 0
         containers:
         - name: saycan-worker
-          image: 10.42.0.5:5000/app-saycan:latest
+          image: robot0:5000/app-saycan:latest
           env:
           - name: GLOO_SOCKET_IFNAME
             value: "eth0"
